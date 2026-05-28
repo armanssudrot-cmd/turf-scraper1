@@ -1,18 +1,12 @@
 {
   "name": "turf-scraper",
-  "version": "1.0.0",
-  "description": "Scraper partants PMU pour Turf Analyser Pro",
+  "version": "3.0.0",
+  "description": "Scraper partants PMU via API officielle",
   "main": "server.js",
-  "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js"
-  },
+  "scripts": { "start": "node server.js" },
   "dependencies": {
     "express": "^4.18.2",
-    "puppeteer": "^21.0.0",
     "cors": "^2.8.5"
   },
-  "engines": {
-    "node": ">=18.0.0"
-  }
+  "engines": { "node": ">=18.0.0" }
 }
