@@ -14,7 +14,7 @@ function httpGet(url, extraHeaders={}) {
     const req = lib.get(url, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120',
-        'Accept': 'application/json, */*',
+        'Accept': 'application/json, text/html, */*',
         'Accept-Language': 'fr-FR,fr;q=0.9',
         'Cache-Control': 'no-cache',
         ...extraHeaders
@@ -37,12 +37,13 @@ function dateToPMU(date) {
   return p[2] + p[1] + p[0];
 }
 
-function nom(obj) {
+function nomObj(obj) {
   if (!obj) return '';
+  if (typeof obj === 'string') return obj;
   return obj.nom || obj.name || obj.libelle || obj.libelleCourt || '';
 }
 
-// ── API PMU ──────────────────────────────────────────────────
+// ── API PMU participants ─────────────────────────────────────
 async function getPMU(date, reunion, numCourse) {
   const d = dateToPMU(date);
   const urls = [
@@ -54,70 +55,51 @@ async function getPMU(date, reunion, numCourse) {
     try {
       console.log('[PMU]', url);
       const res = await httpGet(url);
-      if (res.status !== 200) { console.log('[PMU] Status:', res.status); continue; }
-      
+      if (res.status !== 200) continue;
       const data = JSON.parse(res.body);
       if (!data.participants || data.participants.length === 0) continue;
-
-      console.log('[PMU] Sample partant:', JSON.stringify(data.participants[0]).substring(0, 300));
 
       return {
         source: 'pmu_api',
         course: {
           nom: data.libelle || data.libelleCourt || '',
-          hippodrome: nom(data.hippodrome),
+          hippodrome: nomObj(data.hippodrome),
           heure: data.heureDepart ? new Date(data.heureDepart).toLocaleTimeString('fr-FR', {hour:'2-digit',minute:'2-digit'}) : '',
-          distance: data.distanceUnit ? data.distanceUnit + 'm' : (data.distance ? data.distance + 'm' : ''),
-          discipline: data.specialite || data.discipline || '',
-          terrain: nom(data.terrain) || data.parcours || '',
+          distance: data.distanceUnit ? data.distanceUnit+'m' : '',
+          discipline: data.specialite || '',
+          terrain: nomObj(data.terrain) || data.parcours || '',
           partants_total: data.participants.length,
-          dotation: data.montantPrix ? (data.montantPrix / 100) + 'e' : ''
+          dotation: data.montantPrix ? Math.round(data.montantPrix/100)+'e' : ''
         },
         partants: data.participants.map(p => {
-          // Driver/Jockey - peut être un objet ou une string
-          let driverNom = '';
-          if (p.driver) driverNom = typeof p.driver === 'string' ? p.driver : nom(p.driver);
-          else if (p.jockey) driverNom = typeof p.jockey === 'string' ? p.jockey : nom(p.jockey);
-          else if (p.driverName) driverNom = p.driverName;
-          else if (p.jockeyName) driverNom = p.jockeyName;
-
-          // Entraineur
-          let entraineurNom = '';
-          if (p.entraineur) entraineurNom = typeof p.entraineur === 'string' ? p.entraineur : nom(p.entraineur);
-          else if (p.trainer) entraineurNom = typeof p.trainer === 'string' ? p.trainer : nom(p.trainer);
-          else if (p.entraineurName) entraineurNom = p.entraineurName;
-
-          // Gains - peut être dans gainsParticipant ou directement
+          let driver = nomObj(p.driver) || nomObj(p.jockey) || p.driverName || p.jockeyName || '';
+          let entraineur = nomObj(p.entraineur) || nomObj(p.trainer) || p.entraineurName || '';
           let gains = 0;
           if (p.gainsParticipant) {
-            gains = (p.gainsParticipant.gainsCarriere || p.gainsParticipant.gainsTotaux || 0) / 100;
+            gains = Math.round((p.gainsParticipant.gainsCarriere || p.gainsParticipant.gainsTotaux || 0) / 100);
           } else {
-            gains = p.gainsCarriere || p.gainsVictoires || p.gains || 0;
-            if (gains > 1000000) gains = gains / 100; // Parfois en centimes
+            gains = p.gainsCarriere || p.gainsVictoires || 0;
+            if (gains > 100000) gains = Math.round(gains / 100);
           }
-
-          // Musique
-          let musique = p.musique || p.formString || p.dernierRapport || '';
-
-          // Cote
+          // Cotes: rapportSimpleGagnant disponible seulement quand paris ouverts
           let cote = '';
-          if (p.rapportSimpleGagnant) cote = String(p.rapportSimpleGagnant);
-          else if (p.dernierRapportDirect) cote = String(p.dernierRapportDirect);
-          else if (p.cote) cote = String(p.cote);
+          if (p.rapportSimpleGagnant && p.rapportSimpleGagnant > 0) cote = String(p.rapportSimpleGagnant);
+          else if (p.dernierRapportDirect && p.dernierRapportDirect > 0) cote = String(p.dernierRapportDirect);
+          else if (p.cote && p.cote > 0) cote = String(p.cote);
 
           return {
-            num: String(p.numPmu || p.numero || ''),
+            num: String(p.numPmu || ''),
             nom: p.nom || '',
-            driver: driverNom,
-            entraineur: entraineurNom,
-            cote: cote,
-            musique: musique,
-            gains_total: Math.round(gains),
-            nb_courses: p.nombreCourses || p.nbCourses || 0,
-            poids: p.poidsJockey || p.poids || 0,
+            driver,
+            entraineur,
+            cote,
+            musique: p.musique || '',
+            gains_total: gains,
+            nb_courses: p.nombreCourses || 0,
+            poids: p.poidsJockey || 0,
             deferre: p.deferre || '',
             oeilleres: p.oeilleres || '',
-            proprietaire: nom(p.proprietaire)
+            proprietaire: nomObj(p.proprietaire)
           };
         }).filter(p => p.nom)
       };
@@ -128,129 +110,135 @@ async function getPMU(date, reunion, numCourse) {
   return null;
 }
 
-// ── API Geny (AJAX) ──────────────────────────────────────────
-async function getGeny(date, nomCourse, hippodrome, courseId) {
-  function slug(s) {
-    return (s||'').toLowerCase().normalize('NFD')
-      .replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');
+// ── Cotes Zeturf ────────────────────────────────────────────
+async function getCotesZeturf(date, reunion, numCourse) {
+  // Zeturf expose les cotes dans ses pages de course
+  const url = `https://www.zeturf.fr/fr/course-du-jour/${date}/${reunion.toLowerCase()}${numCourse.toLowerCase()}-`;
+  try {
+    console.log('[Zeturf cotes]', url);
+    const res = await httpGet(url);
+    if (res.status !== 200) return null;
+    
+    // Chercher les cotes dans le JSON embarqué
+    const html = res.body;
+    const match = html.match(/"odds":\s*(\{[^}]+\})/);
+    if (match) {
+      const odds = JSON.parse(match[1]);
+      return odds;
+    }
+    
+    // Chercher pattern alternatif
+    const patterns = [
+      /"cote"\s*:\s*([\d.]+)/g,
+      /"rapport"\s*:\s*([\d.]+)/g,
+      /data-cote="([\d.]+)"/g
+    ];
+    const cotes = {};
+    for (const pat of patterns) {
+      let m;
+      let num = 1;
+      while ((m = pat.exec(html)) !== null) {
+        cotes[num++] = m[1];
+      }
+      if (Object.keys(cotes).length > 2) return cotes;
+    }
+  } catch(e) {
+    console.log('[Zeturf] Erreur:', e.message);
   }
+  return null;
+}
 
-  // Essayer l'URL avec ID Geny si disponible
-  const urls = [];
-  if (courseId) urls.push(`https://www.geny.com/partants-pmu/${date}-${slug(hippodrome)}-pmu-${slug(nomCourse)}_c${courseId}`);
-  urls.push(`https://www.geny.com/partants-pmu/${date}-${slug(hippodrome)}-pmu-${slug(nomCourse)}`);
+// ── Cotes PMU endpoint dédié ─────────────────────────────────
+async function getCotesPMU(date, reunion, numCourse) {
+  const d = dateToPMU(date);
+  // Endpoints spécifiques pour les cotes en direct
+  const urls = [
+    `https://online.turfinfo.api.pmu.fr/rest/client/7/programme/${d}/${reunion}/${numCourse}/rapports-complets`,
+    `https://online.turfinfo.api.pmu.fr/rest/client/7/programme/${d}/${reunion}/${numCourse}/rapports-definitifs`,
+    `https://www.pmu.fr/rest/client/7/programme/${d}/${reunion}/${numCourse}/rapports-complets`
+  ];
 
   for (const url of urls) {
     try {
-      console.log('[Geny HTML]', url);
-      const res = await httpGet(url, { 'Accept': 'text/html' });
+      console.log('[PMU cotes]', url);
+      const res = await httpGet(url);
       if (res.status !== 200) continue;
-
-      // Chercher les données JSON dans le HTML
-      const html = res.body;
+      const data = JSON.parse(res.body);
       
-      // Pattern 1: variable JS avec les partants
-      const patterns = [
-        /var\s+partants\s*=\s*(\[[\s\S]{50,}\]);/,
-        /"partants"\s*:\s*(\[[\s\S]{50,}\])/,
-        /partants\s*:\s*(\[[\s\S]{50,}\])/,
-        /runners\s*:\s*(\[[\s\S]{50,}\])/,
-        /"participants"\s*:\s*(\[[\s\S]{50,}\])/
-      ];
-
-      for (const pat of patterns) {
-        const m = html.match(pat);
-        if (m) {
-          try {
-            const arr = JSON.parse(m[1]);
-            if (arr.length > 2) {
-              console.log('[Geny] Données trouvées:', arr.length, 'partants');
-              return {
-                source: 'geny',
-                course: { nom: nomCourse, hippodrome },
-                partants: arr.map((p,i) => ({
-                  num: String(p.numero || p.num || i+1),
-                  nom: p.nom || p.cheval || p.horseName || '',
-                  driver: p.driver || p.jockey || '',
-                  entraineur: p.entraineur || p.trainer || '',
-                  cote: String(p.cote || p.rapport || ''),
-                  musique: p.musique || '',
-                  gains_total: p.gainsCarriere || p.gains || 0,
-                  nb_courses: p.nbCourses || 0
-                })).filter(p => p.nom)
-              };
-            }
-          } catch(e) {}
+      // Chercher les rapports simples gagnants
+      const rapports = data.rapportsSimples || data.rapports || data.listeRapports || [];
+      if (rapports.length > 0) {
+        const cotesMap = {};
+        rapports.forEach(r => {
+          if (r.numPmu && r.rapport) cotesMap[String(r.numPmu)] = String(r.rapport);
+          else if (r.combinaison && r.combinaison.length === 1 && r.rapport) {
+            cotesMap[String(r.combinaison[0])] = String(r.rapport);
+          }
+        });
+        if (Object.keys(cotesMap).length > 0) {
+          console.log('[PMU cotes] Trouvé:', Object.keys(cotesMap).length, 'cotes');
+          return cotesMap;
         }
       }
     } catch(e) {
-      console.log('[Geny] Erreur:', e.message);
+      console.log('[PMU cotes] Erreur:', e.message);
     }
   }
   return null;
 }
 
-// ── FUSION ───────────────────────────────────────────────────
-function fusionner(pmu, geny) {
-  if (!pmu) return geny;
-  if (!geny || geny.partants.length === 0) return pmu;
-
-  // Enrichir PMU avec données Geny
-  pmu.partants = pmu.partants.map(p => {
-    const g = geny.partants.find(e =>
-      e.num === p.num || e.nom.toLowerCase() === p.nom.toLowerCase()
-    );
-    if (!g) return p;
-    return {
-      ...p,
-      driver: p.driver || g.driver || '',
-      entraineur: p.entraineur || g.entraineur || '',
-      cote: g.cote || p.cote || '',
-      musique: p.musique || g.musique || '',
-      gains_total: p.gains_total || g.gains_total || 0
-    };
-  });
-
-  pmu.source = 'pmu_api+geny';
-  return pmu;
+// ── Fusion avec cotes ────────────────────────────────────────
+function enrichirCotes(partants, cotesMap) {
+  if (!cotesMap || Object.keys(cotesMap).length === 0) return partants;
+  return partants.map(p => ({
+    ...p,
+    cote: cotesMap[p.num] || p.cote || ''
+  }));
 }
 
 // ── ROUTES ───────────────────────────────────────────────────
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', service: 'Turf Scraper API', version: '5.0.0' });
+  res.json({ status: 'ok', service: 'Turf Scraper API', version: '6.0.0' });
 });
 
 app.post('/partants', async (req, res) => {
   const { date, nomCourse, hippodrome, reunion, numCourse, courseId } = req.body;
-
   if (!date || !reunion || !numCourse) {
     return res.status(400).json({ error: 'date, reunion et numCourse requis', recu: req.body });
   }
 
   console.log(`\n[API] ${date} ${reunion}/${numCourse} "${nomCourse}" ${hippodrome}`);
 
-  // PMU en priorité + Geny en parallèle
-  const [pmuResult, genyResult] = await Promise.allSettled([
+  // Lancer PMU + cotes en parallèle
+  const [pmuResult, cotesResult] = await Promise.allSettled([
     getPMU(date, reunion, numCourse),
-    nomCourse && hippodrome ? getGeny(date, nomCourse, hippodrome, courseId) : Promise.resolve(null)
+    getCotesPMU(date, reunion, numCourse)
   ]).then(r => r.map(x => x.status === 'fulfilled' ? x.value : null));
 
-  console.log(`[API] PMU: ${pmuResult?.partants?.length||0} | Geny: ${genyResult?.partants?.length||0}`);
+  console.log(`[API] PMU: ${pmuResult?.partants?.length||0} partants | Cotes: ${cotesResult ? Object.keys(cotesResult).length : 0}`);
 
-  const final = fusionner(pmuResult, genyResult);
-
-  if (final && final.partants && final.partants.length > 0) {
-    console.log(`[API] OK (${final.source}): ${final.partants.length} partants`);
-    // Log premier partant pour debug
-    if (final.partants[0]) console.log('[API] Partant 1:', JSON.stringify(final.partants[0]));
-    return res.json({ ...final, date, demande: { nomCourse, hippodrome, reunion, numCourse } });
+  if (!pmuResult || pmuResult.partants.length === 0) {
+    return res.status(404).json({
+      partants: [], date,
+      demande: { nomCourse, hippodrome, reunion, numCourse },
+      message: 'Partants non trouves - Claude va chercher'
+    });
   }
 
-  res.status(404).json({
-    partants: [], date,
-    demande: { nomCourse, hippodrome, reunion, numCourse },
-    message: 'Partants non trouves - Claude va chercher'
+  // Enrichir avec les cotes si disponibles
+  if (cotesResult) {
+    pmuResult.partants = enrichirCotes(pmuResult.partants, cotesResult);
+    pmuResult.source = 'pmu_api+cotes';
+  }
+
+  // Log premier partant pour debug
+  console.log('[API] Partant 1:', JSON.stringify(pmuResult.partants[0]));
+
+  return res.json({
+    ...pmuResult,
+    date,
+    demande: { nomCourse, hippodrome, reunion, numCourse }
   });
 });
 
-app.listen(PORT, () => console.log(`Turf Scraper v5.0 - Port ${PORT}`));
+app.listen(PORT, () => console.log(`Turf Scraper v6.0 - Port ${PORT}`));
